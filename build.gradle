@@ -1,11 +1,12 @@
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     id 'java-library'
-    id 'maven-publish'
-    id 'signing'
+    id 'com.vanniktech.maven.publish' version '0.30.0'
 }
 
 group = 'com.khaounen'
-version = '0.1.1-SNAPSHOT'
+version = (findProperty('releaseVersion') ?: System.getenv('RELEASE_VERSION') ?: '0.1.1-SNAPSHOT')
 sourceCompatibility = JavaVersion.VERSION_17
 targetCompatibility = JavaVersion.VERSION_17
 
@@ -15,7 +16,6 @@ repositories {
 
 java {
     withSourcesJar()
-    withJavadocJar()
 }
 
 dependencies {
@@ -36,47 +36,29 @@ dependencies {
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 }
 
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-            pom {
-                name = 'rate-limit-starter'
-                description = 'Rate limiting starter with fingerprint support.'
-                url = 'https://github.com/your-org/rate-limit-starter'
-                licenses {
-                    license {
-                        name = 'Apache-2.0'
-                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
-                    }
-                }
-                developers {
-                    developer {
-                        id = 'khaledawnen'
-                        name = 'Khaled Awnen'
-                    }
-                }
-                scm {
-                    url = 'https://github.com/your-org/rate-limit-starter'
-                    connection = 'scm:git:git://github.com/your-org/rate-limit-starter.git'
-                    developerConnection = 'scm:git:ssh://github.com/your-org/rate-limit-starter.git'
-                }
+mavenPublishing {
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    signAllPublications()
+    pom {
+        name = 'rate-limit-starter'
+        description = 'Rate limiting starter with fingerprint support.'
+        url = 'https://github.com/khaounen/rate-limit-starter'
+        licenses {
+            license {
+                name = 'Apache-2.0'
+                url = 'https://www.apache.org/licenses/LICENSE-2.0'
             }
         }
-    }
-    repositories {
-        maven {
-            name = 'OSSRH'
-            url = 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
-            credentials {
-                username = findProperty('ossrhUsername') ?: ''
-                password = findProperty('ossrhPassword') ?: ''
+        developers {
+            developer {
+                id = 'khaledawnen'
+                name = 'Khaled Awnen'
             }
         }
+        scm {
+            url = 'https://github.com/khaounen/rate-limit-starter'
+            connection = 'scm:git:git://github.com/khaounen/rate-limit-starter.git'
+            developerConnection = 'scm:git:ssh://github.com/khaounen/rate-limit-starter.git'
+        }
     }
-}
-
-signing {
-    required { gradle.taskGraph.hasTask('publish') }
-    sign publishing.publications.mavenJava
 }

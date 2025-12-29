@@ -83,7 +83,24 @@ public FingerprintStrategy fingerprintStrategy() {
 ```
 
 ## Publishing
-This project uses `maven-publish` + `signing` for OSSRH.
+Releases are published by pushing a tag like `v1.0.0`.
+The GitHub Actions workflow publishes to Maven Central (Central Portal).
+
+Required GitHub secrets:
+- `MAVEN_CENTRAL_USERNAME`
+- `MAVEN_CENTRAL_PASSWORD`
+- `MAVEN_SIGNING_KEY` (ASCII-armored PGP private key)
+- `MAVEN_SIGNING_PASSWORD`
+
+Local publish:
+```bash
+./gradlew publishToMavenLocal -PreleaseVersion=1.0.0
+```
+
+Manual Central publish:
+```bash
+./gradlew publishToMavenCentral -PreleaseVersion=1.0.0
+```
 
 ## License
 Apache-2.0
