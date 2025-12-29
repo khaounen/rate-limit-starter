@@ -1,1 +1,0 @@
-packageSearchIndex = [{"l":"All Packages","u":"allpackages-index.html"},{"l":"com.khaounen.config"},{"l":"com.khaounen.security.filters"},{"l":"com.khaounen.security.ratelimit"},{"l":"com.khaounen.utils"}];updateSearchResults();

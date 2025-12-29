@@ -5,7 +5,7 @@ plugins {
     id 'com.vanniktech.maven.publish' version '0.30.0'
 }
 
-group = 'com.khaounen'
+group = 'io.github.khaounen'
 version = (findProperty('releaseVersion') ?: System.getenv('RELEASE_VERSION') ?: '0.1.1-SNAPSHOT')
 sourceCompatibility = JavaVersion.VERSION_17
 targetCompatibility = JavaVersion.VERSION_17

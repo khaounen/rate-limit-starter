@@ -11,7 +11,7 @@ Spring Boot rate-limit starter with fingerprint-based throttling, Redis TTL coun
 ## Installation
 ```gradle
 dependencies {
-    implementation "com.khaounen:rate-limit-starter:1.0.0"
+    implementation "io.github.khaounen:rate-limit-starter:1.0.0"
 }
 ```
 
