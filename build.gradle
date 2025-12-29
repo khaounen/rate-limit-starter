@@ -1,0 +1,81 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'signing'
+}
+
+group = 'com.khaounen'
+version = '0.1.1-SNAPSHOT'
+sourceCompatibility = JavaVersion.VERSION_17
+targetCompatibility = JavaVersion.VERSION_17
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+}
+
+dependencies {
+    api platform("org.springframework.boot:spring-boot-dependencies:3.1.5")
+    api 'org.springframework.boot:spring-boot-autoconfigure'
+    api 'org.springframework:spring-web'
+    api 'org.springframework.security:spring-security-core'
+    api 'com.fasterxml.jackson.core:jackson-databind'
+
+    compileOnly 'jakarta.servlet:jakarta.servlet-api'
+    compileOnly 'org.springframework.boot:spring-boot-starter-data-redis'
+    compileOnly 'org.springframework.data:spring-data-redis'
+    compileOnly 'org.projectlombok:lombok:1.18.20'
+
+    annotationProcessor 'org.projectlombok:lombok:1.18.20'
+    annotationProcessor platform("org.springframework.boot:spring-boot-dependencies:3.1.5")
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            pom {
+                name = 'rate-limit-starter'
+                description = 'Rate limiting starter with fingerprint support.'
+                url = 'https://github.com/your-org/rate-limit-starter'
+                licenses {
+                    license {
+                        name = 'Apache-2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'khaledawnen'
+                        name = 'Khaled Awnen'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/your-org/rate-limit-starter'
+                    connection = 'scm:git:git://github.com/your-org/rate-limit-starter.git'
+                    developerConnection = 'scm:git:ssh://github.com/your-org/rate-limit-starter.git'
+                }
+            }
+        }
+    }
+    repositories {
+        maven {
+            name = 'OSSRH'
+            url = 'https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/'
+            credentials {
+                username = findProperty('ossrhUsername') ?: ''
+                password = findProperty('ossrhPassword') ?: ''
+            }
+        }
+    }
+}
+
+signing {
+    required { gradle.taskGraph.hasTask('publish') }
+    sign publishing.publications.mavenJava
+}
