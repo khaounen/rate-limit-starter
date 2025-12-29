@@ -28,6 +28,7 @@ dependencies {
 
     compileOnly 'jakarta.servlet:jakarta.servlet-api'
     compileOnly 'org.springframework.boot:spring-boot-starter-data-redis'
+    compileOnly 'org.springframework.boot:spring-boot-starter-mail'
     compileOnly 'org.springframework.data:spring-data-redis'
     compileOnly 'org.projectlombok:lombok:1.18.20'
 

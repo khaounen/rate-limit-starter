@@ -1,5 +1,8 @@
 package com.khaounen.security.filters;
 
+import com.khaounen.config.RequestContext;
+import com.khaounen.security.ratelimit.RateLimitChallengeHandler;
+import com.khaounen.security.ratelimit.RateLimitContext;
 import com.khaounen.security.ratelimit.RateLimitDecision;
 import com.khaounen.security.ratelimit.RateLimitProperties;
 import com.khaounen.security.ratelimit.RateLimitService;
@@ -20,6 +23,9 @@ import java.io.InputStreamReader;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -30,15 +36,18 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final RateLimitProperties properties;
     private final RateLimitService service;
     private final ObjectMapper objectMapper;
+    private final RateLimitChallengeHandler challengeHandler;
 
     public RateLimitFilter(
             RateLimitProperties properties,
             RateLimitService service,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            RateLimitChallengeHandler challengeHandler
     ) {
         this.properties = properties;
         this.service = service;
         this.objectMapper = objectMapper;
+        this.challengeHandler = challengeHandler;
     }
 
     @Override
@@ -63,15 +72,31 @@ public class RateLimitFilter extends OncePerRequestFilter {
         boolean authenticated = isAuthenticated();
         RateLimitProperties.Rule rule = ruleOpt.get();
         HttpServletRequest effectiveRequest = request;
-        String identifier = null;
+        List<String> identifiers = List.of();
         if (shouldReadBody(request, rule)) {
             byte[] body = StreamUtils.copyToByteArray(request.getInputStream());
             effectiveRequest = new CachedBodyRequest(request, body);
-            identifier = extractIdentifier(effectiveRequest, rule, body);
+            identifiers = extractIdentifiers(effectiveRequest, rule, body);
         } else {
-            identifier = extractIdentifier(request, rule, null);
+            identifiers = extractIdentifiers(request, rule, null);
         }
-        RateLimitDecision decision = service.check(rule, authenticated, identifier);
+        RateLimitContext ctx = new RateLimitContext(
+                authenticated,
+                RequestContext.getFingerprint(),
+                RequestContext.getIp(),
+                RequestContext.getUserAgent(),
+                identifiers
+        );
+        RateLimitDecision decision = service.check(rule, ctx);
+        response.setHeader("X-RateLimit-Risk", decision.risk().name());
+        if (decision.alert()) {
+            response.setHeader("X-RateLimit-Alert", "true");
+        }
+        if (decision.captchaRequired()) {
+            response.setHeader("X-RateLimit-Challenge", "captcha");
+            challengeHandler.handle(effectiveRequest, response, decision);
+            return;
+        }
         if (!decision.allowed()) {
             response.setStatus(429);
             response.setHeader("Retry-After", String.valueOf(decision.retryAfterSeconds()));
@@ -96,27 +121,28 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return principal != null && !"anonymousUser".equals(principal);
     }
 
-    private String extractIdentifier(HttpServletRequest request, RateLimitProperties.Rule rule, byte[] body) {
+    private List<String> extractIdentifiers(HttpServletRequest request, RateLimitProperties.Rule rule, byte[] body) {
+        LinkedHashSet<String> identifiers = new LinkedHashSet<>();
         String header = rule.getIdentifierHeader();
         if (header != null && !header.isBlank()) {
             String value = request.getHeader(header);
             if (value != null && !value.isBlank()) {
-                return value.trim();
+                identifiers.add(value.trim());
             }
         }
         if (rule.getIdentifierParams() == null || rule.getIdentifierParams().isEmpty()) {
-            return null;
+            return new ArrayList<>(identifiers);
         }
         for (String param : rule.getIdentifierParams()) {
             String value = request.getParameter(param);
             if (value != null && !value.isBlank()) {
-                return value.trim();
+                identifiers.add(value.trim());
             }
         }
         if (body != null && body.length > 0) {
-            return extractFromJsonBody(body, rule.getIdentifierParams());
+            identifiers.addAll(extractFromJsonBody(body, rule.getIdentifierParams()));
         }
-        return null;
+        return new ArrayList<>(identifiers);
     }
 
     private boolean shouldReadBody(HttpServletRequest request, RateLimitProperties.Rule rule) {
@@ -127,26 +153,37 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return contentType != null && contentType.startsWith(MediaType.APPLICATION_JSON_VALUE);
     }
 
-    private String extractFromJsonBody(byte[] body, Iterable<String> fields) {
+    private List<String> extractFromJsonBody(byte[] body, Iterable<String> fields) {
         try {
             String payloadText = new String(body, StandardCharsets.UTF_8);
             if (payloadText.isBlank()) {
-                return null;
+                return List.of();
             }
             Map<String, Object> payload = objectMapper.readValue(payloadText, Map.class);
+            List<String> identifiers = new ArrayList<>();
             for (String field : fields) {
                 Object value = payload.get(field);
                 if (value != null) {
-                    String text = value.toString().trim();
-                    if (!text.isEmpty()) {
-                        return text;
+                    if (value instanceof Iterable<?> items) {
+                        for (Object item : items) {
+                            addIdentifier(identifiers, item);
+                        }
+                    } else {
+                        addIdentifier(identifiers, value);
                     }
                 }
             }
+            return identifiers;
         } catch (Exception ignored) {
-            return null;
+            return List.of();
         }
-        return null;
+    }
+
+    private static void addIdentifier(List<String> identifiers, Object value) {
+        String text = value.toString().trim();
+        if (!text.isEmpty()) {
+            identifiers.add(text);
+        }
     }
 
     private static class CachedBodyRequest extends HttpServletRequestWrapper {

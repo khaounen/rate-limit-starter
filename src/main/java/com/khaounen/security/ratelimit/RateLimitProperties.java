@@ -44,6 +44,14 @@ public class RateLimitProperties {
         private String key;
         private String keySuffix;
         private boolean applyAuthenticatedMultiplier = true;
+        private OnLimitAction onLimitAction = OnLimitAction.BLOCK;
+        private boolean alertOncePerBlock = true;
+        private int alertCooldownSeconds = 0;
+        private int riskScore = 0;
+        private int riskMediumThreshold = 50;
+        private int riskHighThreshold = 80;
+        private int riskWindowSeconds = 3600;
+        private List<KeyType> keyTypes = new ArrayList<>();
         private List<String> identifierParams = new ArrayList<>();
         private String identifierHeader;
 
@@ -53,5 +61,20 @@ public class RateLimitProperties {
             }
             return methods.stream().anyMatch(m -> m.equalsIgnoreCase(method));
         }
+    }
+
+    public enum KeyType {
+        FINGERPRINT,
+        IDENTIFIER,
+        IP,
+        USER_AGENT
+    }
+
+    public enum OnLimitAction {
+        BLOCK,
+        CHALLENGE,
+        ALERT,
+        BLOCK_AND_ALERT,
+        ALERT_ONLY
     }
 }

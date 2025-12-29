@@ -10,13 +10,16 @@ import org.springframework.data.redis.core.RedisTemplate;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class RateLimitService {
 
     private final ObjectProvider<RedisTemplate<String, Long>> redisTemplateProvider;
     private final FingerprintStrategy fingerprintStrategy;
+    private final RateLimitAlertListener alertListener;
+    private final RiskEvaluator riskEvaluator;
 
     private final Cache<String, Counter> localCounters = Caffeine.newBuilder()
             .expireAfter(new CounterExpiry())
@@ -24,104 +27,216 @@ public class RateLimitService {
     private final Cache<String, Counter> localBlocks = Caffeine.newBuilder()
             .expireAfter(new CounterExpiry())
             .build();
+    private final Cache<String, Counter> localIncidents = Caffeine.newBuilder()
+            .expireAfter(new CounterExpiry())
+            .build();
+    private final Cache<String, Counter> localAlerts = Caffeine.newBuilder()
+            .expireAfter(new CounterExpiry())
+            .build();
 
     public RateLimitService(
             ObjectProvider<RedisTemplate<String, Long>> redisTemplateProvider,
-            FingerprintStrategy fingerprintStrategy
+            FingerprintStrategy fingerprintStrategy,
+            RateLimitAlertListener alertListener,
+            RiskEvaluator riskEvaluator
     ) {
         this.redisTemplateProvider = redisTemplateProvider;
         this.fingerprintStrategy = fingerprintStrategy;
+        this.alertListener = alertListener;
+        this.riskEvaluator = riskEvaluator;
     }
 
-    public RateLimitDecision check(RateLimitProperties.Rule rule, boolean authenticated, String identifier) {
-        String fingerprint = fingerprintOrGenerate();
+    public RateLimitDecision check(RateLimitProperties.Rule rule, RateLimitContext ctx) {
+        RateLimitContext safeCtx = ctx == null
+                ? new RateLimitContext(false, null, null, null, List.of())
+                : ctx;
         String ruleKey = buildRuleKey(rule);
-        int maxRequests = applyMultiplier(rule.getMaxRequests(), rule.getAuthenticatedMultiplier(), authenticated, rule.isApplyAuthenticatedMultiplier());
+        int maxRequests = applyMultiplier(
+                rule.getMaxRequests(),
+                rule.getAuthenticatedMultiplier(),
+                safeCtx.authenticated(),
+                rule.isApplyAuthenticatedMultiplier()
+        );
         int windowSeconds = Math.max(1, rule.getWindowSeconds());
         int blockSeconds = Math.max(1, rule.getBlockSeconds());
+        List<String> keyParts = buildKeyParts(rule, safeCtx);
+        RateLimitProperties.OnLimitAction action = rule.getOnLimitAction();
+        int riskWindowSeconds = Math.max(1, rule.getRiskWindowSeconds());
 
         if (redisTemplateProvider.getIfAvailable() != null) {
-            return checkRedis(
+            RateLimitDecision decision = checkRedis(
                     ruleKey,
-                    fingerprint,
-                    identifier,
+                    keyParts,
+                    action,
                     maxRequests,
                     windowSeconds,
-                    blockSeconds
+                    blockSeconds,
+                    riskWindowSeconds,
+                    safeCtx,
+                    rule
             );
+            notifyIfAlert(rule, safeCtx, decision);
+            return decision;
         }
 
-        return checkLocal(ruleKey, fingerprint, identifier, maxRequests, windowSeconds, blockSeconds);
+        RateLimitDecision decision = checkLocal(
+                ruleKey,
+                keyParts,
+                action,
+                maxRequests,
+                windowSeconds,
+                blockSeconds,
+                riskWindowSeconds,
+                safeCtx,
+                rule
+        );
+        notifyIfAlert(rule, safeCtx, decision);
+        return decision;
     }
 
     private RateLimitDecision checkRedis(
             String ruleKey,
-            String fingerprint,
-            String identifier,
+            List<String> keyParts,
+            RateLimitProperties.OnLimitAction action,
             int maxRequests,
             int windowSeconds,
-            int blockSeconds
+            int blockSeconds,
+            int riskWindowSeconds,
+            RateLimitContext ctx,
+            RateLimitProperties.Rule rule
     ) {
         RedisTemplate<String, Long> redis = redisTemplateProvider.getIfAvailable();
         if (redis == null) {
-            return checkLocal(ruleKey, fingerprint, identifier, maxRequests, windowSeconds, blockSeconds);
+            return checkLocal(
+                    ruleKey,
+                    keyParts,
+                    action,
+                    maxRequests,
+                    windowSeconds,
+                    blockSeconds,
+                    riskWindowSeconds,
+                    ctx,
+                    rule
+            );
         }
         try {
-            Long retryAfter = blockedRetryAfter(redis, ruleKey, fingerprint, identifier);
-            if (retryAfter != null) {
-                return RateLimitDecision.block(retryAfter);
+            if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
+                Long retryAfter = blockedRetryAfter(redis, ruleKey, keyParts);
+                if (retryAfter != null) {
+                    long incidentCount = shouldTrackIncidents(action) ? getIncidentCountRedis(redis, ruleKey, keyParts) : 0;
+                    RateLimitDecision decision = RateLimitDecision.block(retryAfter);
+                    if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                            && shouldAlertOnBlock(redis, rule, ruleKey, keyParts, retryAfter)) {
+                        decision = decision.withAlert(true);
+                    }
+                    return applyRisk(rule, ctx, decision, incidentCount);
+                }
             }
-            boolean overLimit = incrementRedis(redis, ruleKey, fingerprint, maxRequests, windowSeconds);
-            if (identifier != null) {
-                String hashed = hash(identifier);
-                overLimit = overLimit || incrementRedis(redis, ruleKey, hashed, maxRequests, windowSeconds);
+            boolean overLimit = false;
+            for (String keyPart : keyParts) {
+                overLimit = incrementRedis(redis, ruleKey, keyPart, maxRequests, windowSeconds) || overLimit;
             }
             if (overLimit) {
-                redis.opsForValue().set(blockKey(ruleKey, fingerprint), 1L, Duration.ofSeconds(blockSeconds));
-                if (identifier != null) {
-                    redis.opsForValue().set(blockKey(ruleKey, hash(identifier)), 1L, Duration.ofSeconds(blockSeconds));
+                long incidentCount = shouldTrackIncidents(action)
+                        ? recordIncidentsRedis(redis, ruleKey, keyParts, riskWindowSeconds)
+                        : 0;
+                if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
+                    for (String keyPart : keyParts) {
+                        redis.opsForValue().set(blockKey(ruleKey, keyPart), 1L, Duration.ofSeconds(blockSeconds));
+                    }
+                    RateLimitDecision decision = RateLimitDecision.block(blockSeconds);
+                    if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                            && shouldAlertOnNewBlock(redis, rule, ruleKey, keyParts, blockSeconds)) {
+                        decision = decision.withAlert(true);
+                    }
+                    return applyRisk(rule, ctx, decision, incidentCount);
                 }
-                return RateLimitDecision.block(blockSeconds);
+                if (action == RateLimitProperties.OnLimitAction.CHALLENGE) {
+                    return applyRisk(rule, ctx, RateLimitDecision.challenge(), incidentCount);
+                }
+                if (action == RateLimitProperties.OnLimitAction.ALERT || action == RateLimitProperties.OnLimitAction.ALERT_ONLY) {
+                    return applyRisk(rule, ctx, RateLimitDecision.alertDecision(), incidentCount);
+                }
             }
-            return RateLimitDecision.allow();
+            long incidentCount = shouldTrackIncidents(action) ? getIncidentCountRedis(redis, ruleKey, keyParts) : 0;
+            return applyRisk(rule, ctx, RateLimitDecision.allow(), incidentCount);
         } catch (Exception ex) {
-            return checkLocal(ruleKey, fingerprint, identifier, maxRequests, windowSeconds, blockSeconds);
+            return checkLocal(
+                    ruleKey,
+                    keyParts,
+                    action,
+                    maxRequests,
+                    windowSeconds,
+                    blockSeconds,
+                    riskWindowSeconds,
+                    ctx,
+                    rule
+            );
         }
     }
 
     private RateLimitDecision checkLocal(
             String ruleKey,
-            String fingerprint,
-            String identifier,
+            List<String> keyParts,
+            RateLimitProperties.OnLimitAction action,
             int maxRequests,
             int windowSeconds,
-            int blockSeconds
+            int blockSeconds,
+            int riskWindowSeconds,
+            RateLimitContext ctx,
+            RateLimitProperties.Rule rule
     ) {
         long now = System.currentTimeMillis();
-        String blockKey = blockKey(ruleKey, fingerprint);
-        Counter block = localBlocks.getIfPresent(blockKey);
-        if (block != null) {
-            if (block.expiresAt > now) {
-                long retryAfterSeconds = (block.expiresAt - now) / 1000;
-                return RateLimitDecision.block(retryAfterSeconds);
+        if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
+            for (String keyPart : keyParts) {
+                String blockKey = blockKey(ruleKey, keyPart);
+                Counter block = localBlocks.getIfPresent(blockKey);
+                if (block != null) {
+                    if (block.expiresAt > now) {
+                        long retryAfterSeconds = (block.expiresAt - now) / 1000;
+                        long incidentCount = shouldTrackIncidents(action) ? getIncidentCountLocal(ruleKey, keyParts, now) : 0;
+                        RateLimitDecision decision = RateLimitDecision.block(retryAfterSeconds);
+                        if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                                && shouldAlertOnBlockLocal(rule, ruleKey, keyParts, now, retryAfterSeconds)) {
+                            decision = decision.withAlert(true);
+                        }
+                        return applyRisk(rule, ctx, decision, incidentCount);
+                    }
+                    localBlocks.invalidate(blockKey);
+                }
             }
-            localBlocks.invalidate(blockKey);
         }
 
-        boolean overLimit = incrementLocal(ruleKey, fingerprint, maxRequests, windowSeconds, now);
-        if (identifier != null) {
-            overLimit = overLimit || incrementLocal(ruleKey, hash(identifier), maxRequests, windowSeconds, now);
+        boolean overLimit = false;
+        for (String keyPart : keyParts) {
+            overLimit = incrementLocal(ruleKey, keyPart, maxRequests, windowSeconds, now) || overLimit;
         }
 
         if (overLimit) {
-            localBlocks.put(blockKey, new Counter(1, now + (blockSeconds * 1000L)));
-            if (identifier != null) {
-                localBlocks.put(blockKey(ruleKey, hash(identifier)), new Counter(1, now + (blockSeconds * 1000L)));
+            long incidentCount = shouldTrackIncidents(action)
+                    ? recordIncidentsLocal(ruleKey, keyParts, riskWindowSeconds, now)
+                    : 0;
+            if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
+                for (String keyPart : keyParts) {
+                    localBlocks.put(blockKey(ruleKey, keyPart), new Counter(1, now + (blockSeconds * 1000L)));
+                }
+                RateLimitDecision decision = RateLimitDecision.block(blockSeconds);
+                if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                        && shouldAlertOnNewBlockLocal(rule, ruleKey, keyParts, now, blockSeconds)) {
+                    decision = decision.withAlert(true);
+                }
+                return applyRisk(rule, ctx, decision, incidentCount);
             }
-            return RateLimitDecision.block(blockSeconds);
+            if (action == RateLimitProperties.OnLimitAction.CHALLENGE) {
+                return applyRisk(rule, ctx, RateLimitDecision.challenge(), incidentCount);
+            }
+            if (action == RateLimitProperties.OnLimitAction.ALERT || action == RateLimitProperties.OnLimitAction.ALERT_ONLY) {
+                return applyRisk(rule, ctx, RateLimitDecision.alertDecision(), incidentCount);
+            }
         }
 
-        return RateLimitDecision.allow();
+        long incidentCount = shouldTrackIncidents(action) ? getIncidentCountLocal(ruleKey, keyParts, now) : 0;
+        return applyRisk(rule, ctx, RateLimitDecision.allow(), incidentCount);
     }
 
     private boolean incrementLocal(String ruleKey, String keyPart, int maxRequests, int windowSeconds, long now) {
@@ -154,6 +269,14 @@ public class RateLimitService {
         return "rate:block:" + ruleKey + ":" + keyPart;
     }
 
+    private static String alertKey(String ruleKey, String keyPart) {
+        return "rate:alert:" + ruleKey + ":" + keyPart;
+    }
+
+    private static String incidentKey(String ruleKey, String keyPart) {
+        return "rate:incident:" + ruleKey + ":" + keyPart;
+    }
+
     private static String buildRuleKey(RateLimitProperties.Rule rule) {
         if (rule.getKey() != null && !rule.getKey().isBlank()) {
             return appendSuffix(rule.getKey(), rule.getKeySuffix());
@@ -183,20 +306,39 @@ public class RateLimitService {
         return count != null && count > maxRequests;
     }
 
+    private static long incrementRedisCount(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            String keyPart,
+            int windowSeconds
+    ) {
+        String countKey = incidentKey(ruleKey, keyPart);
+        Long count = redis.opsForValue().increment(countKey);
+        if (count != null && count == 1L) {
+            redis.expire(countKey, Duration.ofSeconds(windowSeconds));
+        }
+        return count == null ? 0 : count;
+    }
+
+    private static long readRedisCount(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            String keyPart
+    ) {
+        String countKey = incidentKey(ruleKey, keyPart);
+        Long count = redis.opsForValue().get(countKey);
+        return count == null ? 0 : count;
+    }
+
     private static Long blockedRetryAfter(
             RedisTemplate<String, Long> redis,
             String ruleKey,
-            String fingerprint,
-            String identifier
+            List<String> keyParts
     ) {
-        Long ttl = ttlSeconds(redis, blockKey(ruleKey, fingerprint));
-        if (ttl != null) {
-            return ttl;
-        }
-        if (identifier != null) {
-            Long ttlIdentifier = ttlSeconds(redis, blockKey(ruleKey, hash(identifier)));
-            if (ttlIdentifier != null) {
-                return ttlIdentifier;
+        for (String keyPart : keyParts) {
+            Long ttl = ttlSeconds(redis, blockKey(ruleKey, keyPart));
+            if (ttl != null) {
+                return ttl;
             }
         }
         return null;
@@ -229,6 +371,301 @@ public class RateLimitService {
             return fingerprint;
         }
         return fingerprintStrategy.generate(null);
+    }
+
+    private List<String> buildKeyParts(RateLimitProperties.Rule rule, RateLimitContext ctx) {
+        List<String> keyParts = new ArrayList<>();
+        boolean hasExplicitTypes = rule.getKeyTypes() != null && !rule.getKeyTypes().isEmpty();
+        boolean userAgentAllowed = isUserAgentAllowed(rule);
+
+        if (!hasExplicitTypes || rule.getKeyTypes().contains(RateLimitProperties.KeyType.FINGERPRINT)) {
+            String fingerprint = ctx.fingerprint();
+            if (fingerprint == null || fingerprint.isBlank()) {
+                fingerprint = fingerprintOrGenerate();
+            }
+            addKeyPart(keyParts, fingerprint, false);
+        }
+
+        if (!hasExplicitTypes || rule.getKeyTypes().contains(RateLimitProperties.KeyType.IDENTIFIER)) {
+            for (String identifier : ctx.identifiers()) {
+                addKeyPart(keyParts, identifier, true);
+            }
+        }
+
+        if (hasExplicitTypes && rule.getKeyTypes().contains(RateLimitProperties.KeyType.IP)) {
+            addKeyPart(keyParts, ctx.ip(), true);
+        }
+
+        if (hasExplicitTypes && rule.getKeyTypes().contains(RateLimitProperties.KeyType.USER_AGENT) && userAgentAllowed) {
+            addKeyPart(keyParts, ctx.userAgent(), true);
+        }
+
+        if (keyParts.isEmpty()) {
+            addKeyPart(keyParts, fingerprintOrGenerate(), false);
+        }
+
+        return keyParts;
+    }
+
+    private static void addKeyPart(List<String> keyParts, String value, boolean hashValue) {
+        if (value == null) {
+            return;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        keyParts.add(hashValue ? hash(trimmed) : trimmed);
+    }
+
+    private static boolean shouldTrackIncidents(RateLimitProperties.OnLimitAction action) {
+        return action != RateLimitProperties.OnLimitAction.ALERT_ONLY;
+    }
+
+    private static boolean isUserAgentAllowed(RateLimitProperties.Rule rule) {
+        if (rule.getKeyTypes() == null) {
+            return false;
+        }
+        boolean hasIp = rule.getKeyTypes().contains(RateLimitProperties.KeyType.IP);
+        boolean hasFingerprint = rule.getKeyTypes().contains(RateLimitProperties.KeyType.FINGERPRINT);
+        return hasIp || hasFingerprint;
+    }
+
+    private boolean shouldAlertOnBlock(
+            RedisTemplate<String, Long> redis,
+            RateLimitProperties.Rule rule,
+            String ruleKey,
+            List<String> keyParts,
+            long retryAfterSeconds
+    ) {
+        long alertTtl = Math.max(1, retryAfterSeconds);
+        int cooldownSeconds = Math.max(0, rule.getAlertCooldownSeconds());
+        if (cooldownSeconds > 0) {
+            alertTtl = Math.max(alertTtl, cooldownSeconds);
+        }
+        if (!rule.isAlertOncePerBlock() && cooldownSeconds == 0) {
+            return true;
+        }
+        return markAlertedForAnyKeyRedis(redis, ruleKey, keyParts, alertTtl);
+    }
+
+    private boolean shouldAlertOnNewBlock(
+            RedisTemplate<String, Long> redis,
+            RateLimitProperties.Rule rule,
+            String ruleKey,
+            List<String> keyParts,
+            int blockSeconds
+    ) {
+        long alertTtl = Math.max(1, blockSeconds);
+        int cooldownSeconds = Math.max(0, rule.getAlertCooldownSeconds());
+        if (cooldownSeconds > 0) {
+            alertTtl = Math.max(alertTtl, cooldownSeconds);
+        }
+        if (!rule.isAlertOncePerBlock() && cooldownSeconds == 0) {
+            return true;
+        }
+        return markAlertedForAnyKeyRedis(redis, ruleKey, keyParts, alertTtl);
+    }
+
+    private boolean markAlertedForAnyKeyRedis(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            List<String> keyParts,
+            long ttlSeconds
+    ) {
+        for (String keyPart : keyParts) {
+            if (markAlertedRedis(redis, ruleKey, keyPart, ttlSeconds)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean markAlertedRedis(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            String keyPart,
+            long ttlSeconds
+    ) {
+        if (ttlSeconds <= 0) {
+            return false;
+        }
+        String key = alertKey(ruleKey, keyPart);
+        Boolean created = redis.opsForValue().setIfAbsent(key, 1L);
+        if (Boolean.TRUE.equals(created)) {
+            redis.expire(key, Duration.ofSeconds(ttlSeconds));
+            return true;
+        }
+        return false;
+    }
+
+    private boolean shouldAlertOnBlockLocal(
+            RateLimitProperties.Rule rule,
+            String ruleKey,
+            List<String> keyParts,
+            long now,
+            long retryAfterSeconds
+    ) {
+        long alertTtl = Math.max(1, retryAfterSeconds);
+        int cooldownSeconds = Math.max(0, rule.getAlertCooldownSeconds());
+        if (cooldownSeconds > 0) {
+            alertTtl = Math.max(alertTtl, cooldownSeconds);
+        }
+        if (!rule.isAlertOncePerBlock() && cooldownSeconds == 0) {
+            return true;
+        }
+        return markAlertedForAnyKeyLocal(ruleKey, keyParts, now, alertTtl);
+    }
+
+    private boolean shouldAlertOnNewBlockLocal(
+            RateLimitProperties.Rule rule,
+            String ruleKey,
+            List<String> keyParts,
+            long now,
+            int blockSeconds
+    ) {
+        long alertTtl = Math.max(1, blockSeconds);
+        int cooldownSeconds = Math.max(0, rule.getAlertCooldownSeconds());
+        if (cooldownSeconds > 0) {
+            alertTtl = Math.max(alertTtl, cooldownSeconds);
+        }
+        if (!rule.isAlertOncePerBlock() && cooldownSeconds == 0) {
+            return true;
+        }
+        return markAlertedForAnyKeyLocal(ruleKey, keyParts, now, alertTtl);
+    }
+
+    private boolean markAlertedForAnyKeyLocal(
+            String ruleKey,
+            List<String> keyParts,
+            long now,
+            long ttlSeconds
+    ) {
+        for (String keyPart : keyParts) {
+            if (markAlertedLocal(ruleKey, keyPart, now, ttlSeconds)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean markAlertedLocal(
+            String ruleKey,
+            String keyPart,
+            long now,
+            long ttlSeconds
+    ) {
+        if (ttlSeconds <= 0) {
+            return false;
+        }
+        String key = alertKey(ruleKey, keyPart);
+        Counter existing = localAlerts.getIfPresent(key);
+        if (existing != null && existing.expiresAt > now) {
+            return false;
+        }
+        localAlerts.put(key, new Counter(1, now + (ttlSeconds * 1000L)));
+        return true;
+    }
+
+    private void notifyIfAlert(
+            RateLimitProperties.Rule rule,
+            RateLimitContext ctx,
+            RateLimitDecision decision
+    ) {
+        if (alertListener != null && decision != null && decision.alert()) {
+            alertListener.onAlert(rule, ctx, decision);
+        }
+    }
+
+    private RateLimitDecision applyRisk(
+            RateLimitProperties.Rule rule,
+            RateLimitContext ctx,
+            RateLimitDecision decision,
+            long incidentCount
+    ) {
+        if (riskEvaluator == null || decision == null) {
+            return decision;
+        }
+        RiskLevel level = riskEvaluator.evaluate(rule, ctx, decision, incidentCount);
+        return decision.withRisk(level);
+    }
+
+    private long recordIncidentsRedis(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            List<String> keyParts,
+            int riskWindowSeconds
+    ) {
+        long max = 0;
+        for (String keyPart : keyParts) {
+            long count = incrementRedisCount(redis, ruleKey, keyPart, riskWindowSeconds);
+            if (count > max) {
+                max = count;
+            }
+        }
+        return max;
+    }
+
+    private long getIncidentCountRedis(
+            RedisTemplate<String, Long> redis,
+            String ruleKey,
+            List<String> keyParts
+    ) {
+        long max = 0;
+        for (String keyPart : keyParts) {
+            long count = readRedisCount(redis, ruleKey, keyPart);
+            if (count > max) {
+                max = count;
+            }
+        }
+        return max;
+    }
+
+    private long recordIncidentsLocal(
+            String ruleKey,
+            List<String> keyParts,
+            int riskWindowSeconds,
+            long now
+    ) {
+        long max = 0;
+        for (String keyPart : keyParts) {
+            long count = incrementLocalCount(incidentKey(ruleKey, keyPart), riskWindowSeconds, now, localIncidents);
+            if (count > max) {
+                max = count;
+            }
+        }
+        return max;
+    }
+
+    private long getIncidentCountLocal(String ruleKey, List<String> keyParts, long now) {
+        long max = 0;
+        for (String keyPart : keyParts) {
+            String key = incidentKey(ruleKey, keyPart);
+            Counter counter = localIncidents.getIfPresent(key);
+            if (counter == null || counter.expiresAt <= now) {
+                continue;
+            }
+            if (counter.count > max) {
+                max = counter.count;
+            }
+        }
+        return max;
+    }
+
+    private static long incrementLocalCount(
+            String key,
+            int windowSeconds,
+            long now,
+            Cache<String, Counter> cache
+    ) {
+        Counter counter = cache.asMap().compute(key, (k, existing) -> {
+            if (existing == null || existing.expiresAt <= now) {
+                return new Counter(1, now + (windowSeconds * 1000L));
+            }
+            existing.count += 1;
+            return existing;
+        });
+        return counter.count;
     }
 
     private static class Counter {
