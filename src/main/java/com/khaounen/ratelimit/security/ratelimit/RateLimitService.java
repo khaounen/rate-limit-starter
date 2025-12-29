@@ -2,7 +2,6 @@ package com.khaounen.ratelimit.security.ratelimit;
 
 import com.khaounen.ratelimit.config.RequestContext;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -15,9 +14,6 @@ public class RateLimitService {
 
     private final ObjectProvider<RedisTemplate<String, Long>> redisTemplateProvider;
     private final FingerprintStrategy fingerprintStrategy;
-
-    @Value("${spring.data.redis.enabled:false}")
-    private boolean redisEnabled;
 
     private final Map<String, Counter> localCounters = new ConcurrentHashMap<>();
     private final Map<String, Counter> localBlocks = new ConcurrentHashMap<>();
@@ -40,7 +36,7 @@ public class RateLimitService {
         int graceMaxRequests = Math.max(1, rule.getFailClosedGraceMaxRequests());
         int graceBlockSeconds = Math.max(1, rule.getFailClosedGraceBlockSeconds());
 
-        if (redisEnabled && redisTemplateProvider.getIfAvailable() != null) {
+        if (redisTemplateProvider.getIfAvailable() != null) {
             return checkRedis(
                     ruleKey,
                     fingerprint,
@@ -55,7 +51,7 @@ public class RateLimitService {
             );
         }
 
-        if (redisEnabled && rule.isFailClosed()) {
+        if (rule.isFailClosed()) {
             return checkLocal(ruleKey, fingerprint, identifier, graceMaxRequests, graceWindowSeconds, graceBlockSeconds);
         }
 
