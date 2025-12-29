@@ -24,6 +24,7 @@ dependencies {
     api 'org.springframework:spring-web'
     api 'org.springframework.security:spring-security-core'
     api 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.github.ben-manes.caffeine:caffeine'
 
     compileOnly 'jakarta.servlet:jakarta.servlet-api'
     compileOnly 'org.springframework.boot:spring-boot-starter-data-redis'

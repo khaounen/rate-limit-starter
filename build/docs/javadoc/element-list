@@ -1,4 +1,4 @@
-com.khaounen.ratelimit.config
-com.khaounen.ratelimit.security.filters
-com.khaounen.ratelimit.security.ratelimit
-com.khaounen.ratelimit.utils
+com.khaounen.config
+com.khaounen.security.filters
+com.khaounen.security.ratelimit
+com.khaounen.utils

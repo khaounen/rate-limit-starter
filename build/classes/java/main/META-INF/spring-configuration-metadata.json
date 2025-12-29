@@ -2,13 +2,13 @@
   "groups": [
     {
       "name": "rate-limit",
-      "type": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties"
+      "type": "com.khaounen.security.ratelimit.RateLimitProperties",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties"
     },
     {
       "name": "rate-limit.defaults",
-      "type": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties",
+      "type": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties",
       "sourceMethod": "getDefaults()"
     }
   ],
@@ -16,104 +16,80 @@
     {
       "name": "rate-limit.apply-default-to-all",
       "type": "java.lang.Boolean",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties",
       "defaultValue": false
     },
     {
       "name": "rate-limit.defaults.apply-authenticated-multiplier",
       "type": "java.lang.Boolean",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": true
     },
     {
       "name": "rate-limit.defaults.authenticated-multiplier",
       "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": 1
     },
     {
       "name": "rate-limit.defaults.block-seconds",
       "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": 600
-    },
-    {
-      "name": "rate-limit.defaults.fail-closed",
-      "type": "java.lang.Boolean",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
-      "defaultValue": false
-    },
-    {
-      "name": "rate-limit.defaults.fail-closed-grace-block-seconds",
-      "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
-      "defaultValue": 60
-    },
-    {
-      "name": "rate-limit.defaults.fail-closed-grace-max-requests",
-      "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
-      "defaultValue": 1
-    },
-    {
-      "name": "rate-limit.defaults.fail-closed-grace-window-seconds",
-      "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
-      "defaultValue": 60
     },
     {
       "name": "rate-limit.defaults.identifier-header",
       "type": "java.lang.String",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule"
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule"
     },
     {
       "name": "rate-limit.defaults.identifier-params",
       "type": "java.util.List<java.lang.String>",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule"
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule"
     },
     {
       "name": "rate-limit.defaults.key",
       "type": "java.lang.String",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule"
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule"
     },
     {
       "name": "rate-limit.defaults.key-suffix",
       "type": "java.lang.String",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule"
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule"
     },
     {
       "name": "rate-limit.defaults.max-requests",
       "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": 60
     },
     {
       "name": "rate-limit.defaults.methods",
       "type": "java.util.List<java.lang.String>",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule"
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule"
     },
     {
       "name": "rate-limit.defaults.path",
       "type": "java.lang.String",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": ""
     },
     {
       "name": "rate-limit.defaults.window-seconds",
       "type": "java.lang.Integer",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties$Rule",
       "defaultValue": 60
     },
     {
       "name": "rate-limit.enabled",
       "type": "java.lang.Boolean",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties",
       "defaultValue": false
     },
     {
       "name": "rate-limit.endpoints",
-      "type": "java.util.List<com.khaounen.ratelimit.security.ratelimit.RateLimitProperties$Rule>",
-      "sourceType": "com.khaounen.ratelimit.security.ratelimit.RateLimitProperties"
+      "type": "java.util.List<com.khaounen.security.ratelimit.RateLimitProperties$Rule>",
+      "sourceType": "com.khaounen.security.ratelimit.RateLimitProperties"
     }
   ],
   "hints": []

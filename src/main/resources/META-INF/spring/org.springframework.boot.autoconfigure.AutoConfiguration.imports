@@ -1,1 +1,1 @@
-ratelimit.security.com.khaounen.ratelimit.RateLimitAutoConfiguration
+com.khaounen.security.ratelimit.RateLimitAutoConfiguration
