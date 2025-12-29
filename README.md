@@ -4,9 +4,11 @@ Spring Boot rate-limit starter with fingerprint-based throttling, Redis TTL coun
 
 ## Features
 - Per-endpoint rate limits with Ant-style path patterns.
-- Fingerprint strategy interface (default implementation included).
+- Multi-key limits (fingerprint, identifiers, IP, user-agent).
 - Redis-backed counters with Caffeine in-memory fallback.
 - Request context filter to capture IP and user-agent.
+- Risk-aware decisions and on-limit actions (block, challenge, alert).
+- Alert listeners via webhook HTTP POST or SMTP email.
 
 ## Installation
 ```gradle
@@ -34,6 +36,8 @@ rate-limit:
       window-seconds: 60
       max-requests: 5
       block-seconds: 900
+      on-limit-action: ALERT
+      key-types: [FINGERPRINT, IDENTIFIER, IP]
       identifier-params:
         - username
 ```
@@ -61,6 +65,14 @@ Rule fields:
 - `block-seconds` (int): block duration after exceeding the limit.
 - `authenticated-multiplier` (int): multiplier when user is authenticated.
 - `apply-authenticated-multiplier` (boolean): disable multiplier for sensitive endpoints (OTP/signup).
+- `on-limit-action` (string): `BLOCK` (default), `CHALLENGE`, `ALERT`, `BLOCK_AND_ALERT`, or `ALERT_ONLY`.
+- `alert-once-per-block` (boolean): when `BLOCK_AND_ALERT`, emit only one alert per block window (default true).
+- `alert-cooldown-seconds` (int): minimum time between alerts per key; overrides block window if larger.
+- `risk-score` (int): base score added for this endpoint (e.g. login/otp).
+- `risk-medium-threshold` (int): score threshold for `MEDIUM`.
+- `risk-high-threshold` (int): score threshold for `HIGH`.
+- `risk-window-seconds` (int): rolling window for incident count aggregation.
+- `key-types` (list): any of `FINGERPRINT`, `IDENTIFIER`, `IP`, `USER_AGENT`.
 - `identifier-params` (list): request params or JSON fields used as secondary key (email/phone/username).
 - `identifier-header` (string): header used as secondary key.
 - `key` (string): custom Redis key prefix for the rule.
@@ -72,6 +84,30 @@ Notes:
 - Redis is used when a RedisTemplate bean is present; otherwise Caffeine in-memory caches are used.
 - Caffeine entries expire per entry (window or block duration), preventing unbounded growth in local mode.
 
+## Key Types Behavior
+- If `key-types` is empty, defaults to `FINGERPRINT` + `IDENTIFIER` (if any).
+- Each key type is evaluated separately (OR): any key exceeding the limit blocks/alerts the request.
+- `USER_AGENT` is ignored unless `IP` or `FINGERPRINT` is also present to avoid false positives from shared UAs.
+- The default fingerprint already mixes IP + User-Agent (see `DefaultFingerPrint`), so you usually do not need `USER_AGENT` as a key.
+
+Examples:
+```yaml
+rate-limit:
+  endpoints:
+    # Default behavior: fingerprint + identifier
+    - path: /users/login
+      identifier-params: [username]
+
+    # Explicit multi-key: IP + identifier
+    - path: /users/send-otp
+      key-types: [IP, IDENTIFIER]
+      identifier-params: [phone]
+
+    # UA counted only if IP or fingerprint is also present
+    - path: /abuse/signal
+      key-types: [FINGERPRINT, USER_AGENT]
+```
+
 ## Custom Fingerprint
 Provide your own strategy:
 
@@ -79,6 +115,80 @@ Provide your own strategy:
 @Bean
 public FingerprintStrategy fingerprintStrategy() {
     return request -> "custom-fingerprint";
+}
+```
+
+## Alerting (Webhook / SMTP)
+Alerts fire when `on-limit-action: ALERT` is configured on a rule.
+
+Webhook:
+```yaml
+rate-limit:
+  alert:
+    webhook:
+      enabled: true
+      url: https://your-webhook.example/ratelimit
+      connect-timeout-ms: 1000
+      timeout-ms: 2000
+      include-context: true
+  endpoints:
+    - path: /users/login
+      on-limit-action: BLOCK_AND_ALERT
+      alert-once-per-block: true
+      alert-cooldown-seconds: 900
+```
+
+SMTP:
+```yaml
+rate-limit:
+  alert:
+    smtp:
+      enabled: true
+      from: "security@your-domain.com"
+      to:
+        - "ops@your-domain.com"
+      subject: "Rate limit alert"
+      include-context: true
+spring:
+  mail:
+    host: smtp.example.com
+    port: 587
+    username: your-user
+    password: your-pass
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+```
+
+## Challenge Handling
+For `on-limit-action: CHALLENGE`, the default handler returns a `403` with "Captcha required.".
+You can override this behavior by providing a `RateLimitChallengeHandler` bean.
+
+## Risk Evaluation
+The starter computes a risk score per decision using a `RiskEvaluator`. The default evaluator:
+- adds a base `risk-score` from the rule
+- increases score on block/challenge/alert
+- increases score when the same key is throttled repeatedly within `risk-window-seconds`
+
+## On-limit Actions (Detailed)
+- `BLOCK`: over-limit requests are blocked (429) and counted as incidents.
+- `CHALLENGE`: over-limit requests return a challenge response (403) and are counted as incidents.
+- `ALERT`: over-limit requests are allowed, an alert is emitted, and incidents are tracked.
+- `BLOCK_AND_ALERT`: over-limit requests are blocked (429) and an alert is emitted; incidents are tracked.
+- `ALERT_ONLY`: over-limit requests are allowed, an alert is emitted, and incident tracking is skipped (risk stays closer to the base `risk-score`).
+Alerting notes:
+- With `BLOCK_AND_ALERT` and `alert-once-per-block: true`, an alert is emitted only once per block window per key.
+- Set `alert-cooldown-seconds` to avoid email storms when users keep retrying.
+
+Provide your own evaluator:
+```java
+@Bean
+public RiskEvaluator riskEvaluator() {
+    return (rule, ctx, decision, incidentCount) -> {
+        if (incidentCount >= 5) return RiskLevel.HIGH;
+        if (incidentCount >= 2) return RiskLevel.MEDIUM;
+        return RiskLevel.LOW;
+    };
 }
 ```
 
