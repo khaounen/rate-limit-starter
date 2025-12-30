@@ -170,6 +170,18 @@ The starter computes a risk score per decision using a `RiskEvaluator`. The defa
 - increases score on block/challenge/alert
 - increases score when the same key is throttled repeatedly within `risk-window-seconds`
 
+Example tuning:
+```yaml
+rate-limit:
+  endpoints:
+    - path: /users/login
+      on-limit-action: BLOCK_AND_ALERT
+      risk-score: 30
+      risk-medium-threshold: 50
+      risk-high-threshold: 80
+      risk-window-seconds: 3600
+```
+
 ## On-limit Actions (Detailed)
 - `BLOCK`: over-limit requests are blocked (429) and counted as incidents.
 - `CHALLENGE`: over-limit requests return a challenge response (403) and are counted as incidents.

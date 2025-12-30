@@ -28,6 +28,33 @@ class DefaultRiskEvaluatorTest {
         assertEquals(RiskLevel.HIGH, high);
     }
 
+    @Test
+    void respectsCustomThresholdsAndBaseScore() {
+        DefaultRiskEvaluator evaluator = new DefaultRiskEvaluator();
+        RateLimitProperties.Rule rule = new RateLimitProperties.Rule();
+        rule.setRiskScore(60);
+        rule.setRiskMediumThreshold(40);
+        rule.setRiskHighThreshold(70);
+
+        RiskLevel medium = evaluator.evaluate(rule, ctx(), RateLimitDecision.allow(), 0);
+        assertEquals(RiskLevel.MEDIUM, medium);
+
+        RiskLevel high = evaluator.evaluate(rule, ctx(), RateLimitDecision.block(1), 0);
+        assertEquals(RiskLevel.HIGH, high);
+    }
+
+    @Test
+    void incidentCountContributesToRiskScore() {
+        DefaultRiskEvaluator evaluator = new DefaultRiskEvaluator();
+        RateLimitProperties.Rule rule = new RateLimitProperties.Rule();
+        rule.setRiskScore(0);
+        rule.setRiskMediumThreshold(25);
+        rule.setRiskHighThreshold(60);
+
+        RiskLevel medium = evaluator.evaluate(rule, ctx(), RateLimitDecision.allow(), 6);
+        assertEquals(RiskLevel.MEDIUM, medium);
+    }
+
     private static RateLimitContext ctx() {
         return new RateLimitContext(false, "fp", "ip", "ua", List.of("id"));
     }
