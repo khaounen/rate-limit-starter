@@ -32,9 +32,17 @@ dependencies {
     compileOnly 'org.springframework.data:spring-data-redis'
     compileOnly 'org.projectlombok:lombok:1.18.20'
 
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'jakarta.servlet:jakarta.servlet-api'
+    testImplementation 'org.springframework.data:spring-data-redis'
+
     annotationProcessor 'org.projectlombok:lombok:1.18.20'
     annotationProcessor platform("org.springframework.boot:spring-boot-dependencies:3.1.5")
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 mavenPublishing {
