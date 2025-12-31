@@ -13,6 +13,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 import jakarta.servlet.ReadListener;
@@ -23,6 +24,7 @@ import java.io.InputStreamReader;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.Principal;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -69,7 +71,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        boolean authenticated = isAuthenticated();
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        boolean authenticated = isAuthenticated(auth);
         RateLimitProperties.Rule rule = ruleOpt.get();
         HttpServletRequest effectiveRequest = request;
         List<String> identifiers = List.of();
@@ -82,7 +85,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
         RateLimitContext ctx = new RateLimitContext(
                 authenticated,
-                RequestContext.getFingerprint(),
+                resolveFingerprint(auth, authenticated),
                 RequestContext.getIp(),
                 RequestContext.getUserAgent(),
                 identifiers
@@ -112,13 +115,37 @@ public class RateLimitFilter extends OncePerRequestFilter {
         filterChain.doFilter(effectiveRequest, response);
     }
 
-    private boolean isAuthenticated() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    private boolean isAuthenticated(Authentication auth) {
         if (auth == null || !auth.isAuthenticated()) {
             return false;
         }
         Object principal = auth.getPrincipal();
         return principal != null && !"anonymousUser".equals(principal);
+    }
+
+    private String resolveFingerprint(Authentication auth, boolean authenticated) {
+        if (!authenticated || auth == null) {
+            return RequestContext.getFingerprint();
+        }
+        String authName = auth.getName();
+        if (authName != null && !authName.isBlank()) {
+            return authName;
+        }
+        Object principal = auth.getPrincipal();
+        if (principal == null || "anonymousUser".equals(principal)) {
+            return RequestContext.getFingerprint();
+        }
+        if (principal instanceof UserDetails userDetails) {
+            return userDetails.getUsername();
+        }
+        if (principal instanceof Principal javaPrincipal) {
+            return javaPrincipal.getName();
+        }
+        if (principal instanceof String text) {
+            return text;
+        }
+        String value = principal.toString();
+        return value == null || value.isBlank() ? RequestContext.getFingerprint() : value;
     }
 
     private List<String> extractIdentifiers(HttpServletRequest request, RateLimitProperties.Rule rule, byte[] body) {

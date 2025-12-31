@@ -10,6 +10,10 @@ Spring Boot rate-limit starter with fingerprint-based throttling, Redis TTL coun
 - Risk-aware decisions and on-limit actions (block, challenge, alert).
 - Alert listeners via webhook HTTP POST or SMTP email.
 
+## Compatibility
+- Java 17+
+- Spring Boot 3.x
+
 ## Installation
 ```gradle
 dependencies {
@@ -48,6 +52,8 @@ The starter registers two filters in the Spring Security chain:
 - `RateLimitFilter`: runs after auth so it can apply `authenticated-multiplier`.
 
 This ordering ensures the fingerprint is always available, and authenticated users can benefit from higher limits.
+When a request is authenticated, the rate-limit fingerprint is derived from `Authentication.getName()` (e.g., JWT `sub`),
+falling back to the request fingerprint for anonymous traffic.
 
 ## Configuration Reference
 
