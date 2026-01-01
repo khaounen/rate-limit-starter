@@ -66,21 +66,21 @@ Top-level:
 Rule fields:
 - `path` (string): Ant-style path pattern.
 - `methods` (list): restrict by HTTP method. Empty = all.
-- `window-seconds` (int): time window in seconds.
-- `max-requests` (int): max requests per window.
-- `block-seconds` (int): block duration after exceeding the limit.
-- `authenticated-multiplier` (int): multiplier when user is authenticated.
-- `mobile-multiplier` (int): multiplier when device attestation is valid.
-- `apply-authenticated-multiplier` (boolean): disable multiplier for sensitive endpoints (OTP/signup).
-- `on-limit-action` (string): `BLOCK` (default), `CHALLENGE`, `ALERT`, `BLOCK_AND_ALERT`, or `ALERT_ONLY`.
-- `alert-once-per-block` (boolean): when `BLOCK_AND_ALERT`, emit only one alert per block window (default true).
-- `alert-cooldown-seconds` (int): minimum time between alerts per key; overrides block window if larger.
-- `risk-score` (int): base score added for this endpoint (e.g. login/otp).
-- `risk-medium-threshold` (int): score threshold for `MEDIUM`.
-- `risk-high-threshold` (int): score threshold for `HIGH`.
-- `risk-window-seconds` (int): rolling window for incident count aggregation.
-- `risk-block-multiplier-medium` (int): multiply `block-seconds` when risk is `MEDIUM`.
-- `risk-block-multiplier-high` (int): multiply `block-seconds` when risk is `HIGH`.
+- `window-seconds` (int, default 60 seconds): time window in seconds.
+- `max-requests` (int, default 60): max requests per window.
+- `block-seconds` (int, default 600 seconds / 10 minutes): block duration after exceeding the limit.
+- `authenticated-multiplier` (int, default 1): multiplier when user is authenticated.
+- `mobile-multiplier` (int, default 1): multiplier when device attestation is valid.
+- `apply-authenticated-multiplier` (boolean, default true): disable multiplier for sensitive endpoints (OTP/signup).
+- `on-limit-action` (string, default `BLOCK`): `BLOCK`, `CHALLENGE`, `ALERT`, `BLOCK_AND_ALERT`, or `ALERT_ONLY`.
+- `alert-once-per-block` (boolean, default true): when `BLOCK_AND_ALERT`, emit only one alert per block window.
+- `alert-cooldown-seconds` (int, default 0 seconds): minimum time between alerts per key; overrides block window if larger.
+- `risk-score` (int, default 0): base score added for this endpoint (e.g. login/otp).
+- `risk-medium-threshold` (int, default 50): score threshold for `MEDIUM`.
+- `risk-high-threshold` (int, default 80): score threshold for `HIGH`.
+- `risk-window-seconds` (int, default 86400 seconds / 1 day): rolling window for incident count aggregation.
+- `risk-block-multiplier-medium` (int, default 1): multiply `block-seconds` when risk is `MEDIUM`.
+- `risk-block-multiplier-high` (int, default 1): multiply `block-seconds` when risk is `HIGH`.
 - `key-types` (list): any of `FINGERPRINT`, `IDENTIFIER`, `IP`, `USER_AGENT`, `VERIFIED_USER`, `MOBILE_ATTESTED`.
 - `identifier-params` (list): request params or JSON fields used as secondary key (email/phone/username).
 - `identifier-header` (string): header used as secondary key.
