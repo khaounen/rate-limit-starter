@@ -4,6 +4,8 @@ import java.util.List;
 
 public record RateLimitContext(
         boolean authenticated,
+        boolean verified,
+        boolean mobileAttested,
         String fingerprint,
         String ip,
         String userAgent,

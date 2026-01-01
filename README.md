@@ -70,6 +70,7 @@ Rule fields:
 - `max-requests` (int): max requests per window.
 - `block-seconds` (int): block duration after exceeding the limit.
 - `authenticated-multiplier` (int): multiplier when user is authenticated.
+- `mobile-multiplier` (int): multiplier when device attestation is valid.
 - `apply-authenticated-multiplier` (boolean): disable multiplier for sensitive endpoints (OTP/signup).
 - `on-limit-action` (string): `BLOCK` (default), `CHALLENGE`, `ALERT`, `BLOCK_AND_ALERT`, or `ALERT_ONLY`.
 - `alert-once-per-block` (boolean): when `BLOCK_AND_ALERT`, emit only one alert per block window (default true).
@@ -78,7 +79,7 @@ Rule fields:
 - `risk-medium-threshold` (int): score threshold for `MEDIUM`.
 - `risk-high-threshold` (int): score threshold for `HIGH`.
 - `risk-window-seconds` (int): rolling window for incident count aggregation.
-- `key-types` (list): any of `FINGERPRINT`, `IDENTIFIER`, `IP`, `USER_AGENT`.
+- `key-types` (list): any of `FINGERPRINT`, `IDENTIFIER`, `IP`, `USER_AGENT`, `VERIFIED_USER`, `MOBILE_ATTESTED`.
 - `identifier-params` (list): request params or JSON fields used as secondary key (email/phone/username).
 - `identifier-header` (string): header used as secondary key.
 - `key` (string): custom Redis key prefix for the rule.
@@ -95,6 +96,8 @@ Notes:
 - Each key type is evaluated separately (OR): any key exceeding the limit blocks/alerts the request.
 - `USER_AGENT` is ignored unless `IP` or `FINGERPRINT` is also present to avoid false positives from shared UAs.
 - The default fingerprint already mixes IP + User-Agent (see `DefaultFingerPrint`), so you usually do not need `USER_AGENT` as a key.
+- `VERIFIED_USER` makes `authenticated-multiplier` apply only when the user is verified.
+- `MOBILE_ATTESTED` makes `mobile-multiplier` apply only when device attestation succeeds.
 
 Examples:
 ```yaml
@@ -112,6 +115,16 @@ rate-limit:
     # UA counted only if IP or fingerprint is also present
     - path: /abuse/signal
       key-types: [FINGERPRINT, USER_AGENT]
+
+    # Auth multiplier only for verified users
+    - path: /users/profile
+      authenticated-multiplier: 2
+      key-types: [FINGERPRINT, VERIFIED_USER]
+
+    # Mobile attestation multiplier
+    - path: /mobile/feed
+      mobile-multiplier: 3
+      key-types: [FINGERPRINT, MOBILE_ATTESTED]
 ```
 
 ## Custom Fingerprint
@@ -121,6 +134,34 @@ Provide your own strategy:
 @Bean
 public FingerprintStrategy fingerprintStrategy() {
     return request -> "custom-fingerprint";
+}
+```
+
+## User Verification / Device Attestation
+To apply multipliers only to verified users or attested devices, provide resolvers:
+
+```java
+@Bean
+public UserVerificationResolver userVerificationResolver() {
+    return (auth, request) -> {
+        if (auth == null || !auth.isAuthenticated()) {
+            return false;
+        }
+        Object principal = auth.getPrincipal();
+        if (principal instanceof org.springframework.security.oauth2.jwt.Jwt jwt) {
+            Object verified = jwt.getClaims().get("verified");
+            return Boolean.TRUE.equals(verified);
+        }
+        return false;
+    };
+}
+
+@Bean
+public DeviceAttestationResolver deviceAttestationResolver(AttestationService attestationService) {
+    return request -> {
+        String token = request.getHeader("X-App-Attestation");
+        return token != null && attestationService.verify(token);
+    };
 }
 ```
 
@@ -169,6 +210,125 @@ spring:
 ## Challenge Handling
 For `on-limit-action: CHALLENGE`, the default handler returns a `403` with "Captcha required.".
 You can override this behavior by providing a `RateLimitChallengeHandler` bean.
+
+Example (custom captcha response):
+```java
+@Bean
+public RateLimitChallengeHandler rateLimitChallengeHandler(CaptchaService captchaService) {
+    return (request, response, decision) -> {
+        String token = request.getHeader("X-Captcha-Token");
+        if (token != null && captchaService.verify(token)) {
+            return;
+        }
+        response.setStatus(403);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"error\":\"captcha_required\"}");
+    };
+}
+```
+
+Example (Cloudflare Turnstile backend verify):
+```java
+@Service
+public class TurnstileCaptchaService implements CaptchaService {
+    private final RestTemplate restTemplate;
+    private final String secret;
+
+    public TurnstileCaptchaService(
+            RestTemplateBuilder restTemplateBuilder,
+            @Value("${captcha.turnstile.secret}") String secret
+    ) {
+        this.restTemplate = restTemplateBuilder.build();
+        this.secret = secret;
+    }
+
+    @Override
+    public boolean verify(String token) {
+        String url = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("secret", secret);
+        form.add("response", token);
+        TurnstileResponse response = restTemplate.postForObject(url, form, TurnstileResponse.class);
+        return response != null && response.success();
+    }
+
+    private record TurnstileResponse(boolean success) {}
+}
+```
+
+Example (Cloudflare Turnstile end-to-end):
+
+Backend config:
+```yaml
+captcha:
+  turnstile:
+    secret: ${TURNSTILE_SECRET}
+```
+
+Backend verify + challenge handler:
+```java
+@Bean
+public RateLimitChallengeHandler rateLimitChallengeHandler(CaptchaService captchaService) {
+    return (request, response, decision) -> {
+        String token = request.getHeader("X-Captcha-Token");
+        if (token != null && captchaService.verify(token)) {
+            return;
+        }
+        response.setStatus(403);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"error\":\"captcha_required\"}");
+    };
+}
+
+@Service
+public class TurnstileCaptchaService implements CaptchaService {
+    private final RestTemplate restTemplate;
+    private final String secret;
+
+    public TurnstileCaptchaService(
+            RestTemplateBuilder restTemplateBuilder,
+            @Value("${captcha.turnstile.secret}") String secret
+    ) {
+        this.restTemplate = restTemplateBuilder.build();
+        this.secret = secret;
+    }
+
+    @Override
+    public boolean verify(String token) {
+        String url = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("secret", secret);
+        form.add("response", token);
+        TurnstileResponse response = restTemplate.postForObject(url, form, TurnstileResponse.class);
+        return response != null && response.success();
+    }
+
+    private record TurnstileResponse(boolean success) {}
+}
+```
+
+Frontend example (plain HTML/JS):
+```html
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<div class="cf-turnstile" data-sitekey="YOUR_SITE_KEY"></div>
+<button id="submit">Submit</button>
+<script>
+  document.getElementById("submit").addEventListener("click", async () => {
+    const token = window.turnstile.getResponse();
+    const res = await fetch("/your/api/endpoint", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Captcha-Token": token
+      },
+      body: JSON.stringify({ hello: "world" })
+    });
+    if (res.status === 403) {
+      window.turnstile.reset();
+    }
+  });
+</script>
+```
 
 ## Risk Evaluation
 The starter computes a risk score per decision using a `RiskEvaluator`. The default evaluator:

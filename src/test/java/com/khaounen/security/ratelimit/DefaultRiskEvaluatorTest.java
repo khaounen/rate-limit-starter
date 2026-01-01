@@ -56,6 +56,6 @@ class DefaultRiskEvaluatorTest {
     }
 
     private static RateLimitContext ctx() {
-        return new RateLimitContext(false, "fp", "ip", "ua", List.of("id"));
+        return new RateLimitContext(false, false, false, "fp", "ip", "ua", List.of("id"));
     }
 }

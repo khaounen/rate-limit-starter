@@ -41,6 +41,7 @@ public class RateLimitProperties {
         private int maxRequests = 60;
         private int blockSeconds = 600;
         private int authenticatedMultiplier = 1;
+        private int mobileMultiplier = 1;
         private String key;
         private String keySuffix;
         private boolean applyAuthenticatedMultiplier = true;
@@ -67,7 +68,9 @@ public class RateLimitProperties {
         FINGERPRINT,
         IDENTIFIER,
         IP,
-        USER_AGENT
+        USER_AGENT,
+        VERIFIED_USER,
+        MOBILE_ATTESTED
     }
 
     public enum OnLimitAction {

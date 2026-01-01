@@ -27,7 +27,7 @@ class RateLimitServiceTest {
         rule.setAlertOncePerBlock(true);
         rule.setAlertCooldownSeconds(3);
 
-        RateLimitContext ctx = new RateLimitContext(false, "fp", null, null, List.of());
+        RateLimitContext ctx = new RateLimitContext(false, false, false, "fp", null, null, List.of());
 
         RateLimitDecision first = service.check(rule, ctx);
         assertTrue(first.allowed());
@@ -66,7 +66,7 @@ class RateLimitServiceTest {
         rule.setAlertOncePerBlock(true);
         rule.setAlertCooldownSeconds(1);
 
-        RateLimitContext ctx = new RateLimitContext(false, "fp", null, null, List.of());
+        RateLimitContext ctx = new RateLimitContext(false, false, false, "fp", null, null, List.of());
 
         service.check(rule, ctx);
         RateLimitDecision blocked = service.check(rule, ctx);
@@ -92,7 +92,7 @@ class RateLimitServiceTest {
         rule.setOnLimitAction(RateLimitProperties.OnLimitAction.BLOCK);
         rule.setKeyTypes(List.of(RateLimitProperties.KeyType.USER_AGENT));
 
-        RateLimitContext ctx = new RateLimitContext(false, null, null, "ua", List.of());
+        RateLimitContext ctx = new RateLimitContext(false, false, false, null, null, "ua", List.of());
 
         try {
             RequestContext.setFingerprint("fp1");
@@ -105,6 +105,54 @@ class RateLimitServiceTest {
         } finally {
             RequestContext.clear();
         }
+    }
+
+    @Test
+    void authenticatedMultiplierRequiresVerifiedWhenConfigured() {
+        RateLimitService service = buildService(new AtomicInteger());
+        RateLimitProperties.Rule rule = baseRule();
+        rule.setMaxRequests(1);
+        rule.setAuthenticatedMultiplier(2);
+        rule.setKeyTypes(List.of(RateLimitProperties.KeyType.FINGERPRINT, RateLimitProperties.KeyType.VERIFIED_USER));
+
+        RateLimitContext unverified = new RateLimitContext(true, false, false, "fp-unverified", null, null, List.of());
+        RateLimitDecision first = service.check(rule, unverified);
+        assertTrue(first.allowed());
+        RateLimitDecision second = service.check(rule, unverified);
+        assertFalse(second.allowed());
+
+        RateLimitContext verified = new RateLimitContext(true, true, false, "fp-verified", null, null, List.of());
+        RateLimitDecision third = service.check(rule, verified);
+        assertTrue(third.allowed());
+        RateLimitDecision fourth = service.check(rule, verified);
+        assertTrue(fourth.allowed());
+        RateLimitDecision fifth = service.check(rule, verified);
+        assertFalse(fifth.allowed());
+    }
+
+    @Test
+    void mobileMultiplierAppliesOnlyWhenAttestedAndEnabled() {
+        RateLimitService service = buildService(new AtomicInteger());
+        RateLimitProperties.Rule rule = baseRule();
+        rule.setMaxRequests(1);
+        rule.setMobileMultiplier(3);
+        rule.setKeyTypes(List.of(RateLimitProperties.KeyType.FINGERPRINT, RateLimitProperties.KeyType.MOBILE_ATTESTED));
+
+        RateLimitContext unattested = new RateLimitContext(false, false, false, "fp-unattested", null, null, List.of());
+        RateLimitDecision first = service.check(rule, unattested);
+        assertTrue(first.allowed());
+        RateLimitDecision second = service.check(rule, unattested);
+        assertFalse(second.allowed());
+
+        RateLimitContext attested = new RateLimitContext(false, false, true, "fp-attested", null, null, List.of());
+        RateLimitDecision third = service.check(rule, attested);
+        assertTrue(third.allowed());
+        RateLimitDecision fourth = service.check(rule, attested);
+        assertTrue(fourth.allowed());
+        RateLimitDecision fifth = service.check(rule, attested);
+        assertTrue(fifth.allowed());
+        RateLimitDecision sixth = service.check(rule, attested);
+        assertFalse(sixth.allowed());
     }
 
     private static RateLimitService buildService(AtomicInteger alerts) {

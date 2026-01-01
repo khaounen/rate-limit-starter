@@ -48,15 +48,25 @@ public class RateLimitService {
 
     public RateLimitDecision check(RateLimitProperties.Rule rule, RateLimitContext ctx) {
         RateLimitContext safeCtx = ctx == null
-                ? new RateLimitContext(false, null, null, null, List.of())
+                ? new RateLimitContext(false, false, false, null, null, null, List.of())
                 : ctx;
         String ruleKey = buildRuleKey(rule);
+        boolean requireVerified = requiresVerified(rule);
+        boolean multiplierEligible = requireVerified ? safeCtx.verified() : safeCtx.authenticated();
         int maxRequests = applyMultiplier(
                 rule.getMaxRequests(),
                 rule.getAuthenticatedMultiplier(),
-                safeCtx.authenticated(),
+                multiplierEligible,
                 rule.isApplyAuthenticatedMultiplier()
         );
+        if (requiresMobileAttestation(rule)) {
+            maxRequests = applyMultiplier(
+                    maxRequests,
+                    rule.getMobileMultiplier(),
+                    safeCtx.mobileAttested(),
+                    true
+            );
+        }
         int windowSeconds = Math.max(1, rule.getWindowSeconds());
         int blockSeconds = Math.max(1, rule.getBlockSeconds());
         List<String> keyParts = buildKeyParts(rule, safeCtx);
@@ -259,6 +269,14 @@ public class RateLimitService {
         }
         long scaled = (long) safeMax * safeMultiplier;
         return (int) Math.min(Integer.MAX_VALUE, scaled);
+    }
+
+    private static boolean requiresVerified(RateLimitProperties.Rule rule) {
+        return rule.getKeyTypes() != null && rule.getKeyTypes().contains(RateLimitProperties.KeyType.VERIFIED_USER);
+    }
+
+    private static boolean requiresMobileAttestation(RateLimitProperties.Rule rule) {
+        return rule.getKeyTypes() != null && rule.getKeyTypes().contains(RateLimitProperties.KeyType.MOBILE_ATTESTED);
     }
 
     private static String countKey(String ruleKey, String keyPart) {
