@@ -155,6 +155,24 @@ class RateLimitServiceTest {
         assertFalse(sixth.allowed());
     }
 
+    @Test
+    void riskBlockMultiplierAppliesForHighRisk() {
+        RateLimitService service = buildService(new AtomicInteger());
+        RateLimitProperties.Rule rule = baseRule();
+        rule.setMaxRequests(1);
+        rule.setBlockSeconds(10);
+        rule.setOnLimitAction(RateLimitProperties.OnLimitAction.BLOCK);
+        rule.setRiskHighThreshold(1);
+        rule.setRiskBlockMultiplierHigh(2);
+
+        RateLimitContext ctx = new RateLimitContext(false, false, false, "fp-risk", null, null, List.of());
+        RateLimitDecision first = service.check(rule, ctx);
+        assertTrue(first.allowed());
+        RateLimitDecision blocked = service.check(rule, ctx);
+        assertFalse(blocked.allowed());
+        assertEquals(20, blocked.retryAfterSeconds());
+    }
+
     private static RateLimitService buildService(AtomicInteger alerts) {
         ObjectProvider<org.springframework.data.redis.core.RedisTemplate<String, Long>> redisProvider =
                 new SimpleObjectProvider<>(null);

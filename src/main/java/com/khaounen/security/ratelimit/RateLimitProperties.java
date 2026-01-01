@@ -52,6 +52,8 @@ public class RateLimitProperties {
         private int riskMediumThreshold = 50;
         private int riskHighThreshold = 80;
         private int riskWindowSeconds = 3600;
+        private int riskBlockMultiplierMedium = 1;
+        private int riskBlockMultiplierHigh = 1;
         private List<KeyType> keyTypes = new ArrayList<>();
         private List<String> identifierParams = new ArrayList<>();
         private String identifierHeader;

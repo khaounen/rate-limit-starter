@@ -79,6 +79,8 @@ Rule fields:
 - `risk-medium-threshold` (int): score threshold for `MEDIUM`.
 - `risk-high-threshold` (int): score threshold for `HIGH`.
 - `risk-window-seconds` (int): rolling window for incident count aggregation.
+- `risk-block-multiplier-medium` (int): multiply `block-seconds` when risk is `MEDIUM`.
+- `risk-block-multiplier-high` (int): multiply `block-seconds` when risk is `HIGH`.
 - `key-types` (list): any of `FINGERPRINT`, `IDENTIFIER`, `IP`, `USER_AGENT`, `VERIFIED_USER`, `MOBILE_ATTESTED`.
 - `identifier-params` (list): request params or JSON fields used as secondary key (email/phone/username).
 - `identifier-header` (string): header used as secondary key.
@@ -335,6 +337,7 @@ The starter computes a risk score per decision using a `RiskEvaluator`. The defa
 - adds a base `risk-score` from the rule
 - increases score on block/challenge/alert
 - increases score when the same key is throttled repeatedly within `risk-window-seconds`
+Note: when a decision is both blocked and alerted, the default evaluator only applies the block penalty (alert does not add extra risk).
 
 Example tuning:
 ```yaml
@@ -346,6 +349,8 @@ rate-limit:
       risk-medium-threshold: 50
       risk-high-threshold: 80
       risk-window-seconds: 3600
+      risk-block-multiplier-medium: 2
+      risk-block-multiplier-high: 4
 ```
 
 ## On-limit Actions (Detailed)

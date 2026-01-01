@@ -15,7 +15,7 @@ public class DefaultRiskEvaluator implements RiskEvaluator {
         if (decision.captchaRequired()) {
             score += 20;
         }
-        if (decision.alert()) {
+        if (decision.alert() && decision.allowed()) {
             score += 20;
         }
         if (incidentCount > 0) {
