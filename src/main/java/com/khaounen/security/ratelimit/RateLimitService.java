@@ -48,15 +48,25 @@ public class RateLimitService {
 
     public RateLimitDecision check(RateLimitProperties.Rule rule, RateLimitContext ctx) {
         RateLimitContext safeCtx = ctx == null
-                ? new RateLimitContext(false, null, null, null, List.of())
+                ? new RateLimitContext(false, false, false, null, null, null, List.of())
                 : ctx;
         String ruleKey = buildRuleKey(rule);
+        boolean requireVerified = requiresVerified(rule);
+        boolean multiplierEligible = requireVerified ? safeCtx.verified() : safeCtx.authenticated();
         int maxRequests = applyMultiplier(
                 rule.getMaxRequests(),
                 rule.getAuthenticatedMultiplier(),
-                safeCtx.authenticated(),
+                multiplierEligible,
                 rule.isApplyAuthenticatedMultiplier()
         );
+        if (requiresMobileAttestation(rule)) {
+            maxRequests = applyMultiplier(
+                    maxRequests,
+                    rule.getMobileMultiplier(),
+                    safeCtx.mobileAttested(),
+                    true
+            );
+        }
         int windowSeconds = Math.max(1, rule.getWindowSeconds());
         int blockSeconds = Math.max(1, rule.getBlockSeconds());
         List<String> keyParts = buildKeyParts(rule, safeCtx);
@@ -141,15 +151,28 @@ public class RateLimitService {
                         ? recordIncidentsRedis(redis, ruleKey, keyParts, riskWindowSeconds)
                         : 0;
                 if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
-                    for (String keyPart : keyParts) {
-                        redis.opsForValue().set(blockKey(ruleKey, keyPart), 1L, Duration.ofSeconds(blockSeconds));
-                    }
+                    boolean alert = action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                            && shouldAlertOnNewBlock(redis, rule, ruleKey, keyParts, blockSeconds);
                     RateLimitDecision decision = RateLimitDecision.block(blockSeconds);
-                    if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
-                            && shouldAlertOnNewBlock(redis, rule, ruleKey, keyParts, blockSeconds)) {
+                    if (alert) {
                         decision = decision.withAlert(true);
                     }
-                    return applyRisk(rule, ctx, decision, incidentCount);
+                    RiskLevel riskLevel = evaluateRiskLevel(rule, ctx, decision, incidentCount);
+                    int adjustedBlockSeconds = applyRiskBlockMultiplier(blockSeconds, riskLevel, rule);
+                    if (adjustedBlockSeconds != blockSeconds) {
+                        decision = RateLimitDecision.block(adjustedBlockSeconds);
+                        if (alert) {
+                            decision = decision.withAlert(true);
+                        }
+                    }
+                    for (String keyPart : keyParts) {
+                        redis.opsForValue().set(
+                                blockKey(ruleKey, keyPart),
+                                1L,
+                                Duration.ofSeconds(adjustedBlockSeconds)
+                        );
+                    }
+                    return decision.withRisk(riskLevel);
                 }
                 if (action == RateLimitProperties.OnLimitAction.CHALLENGE) {
                     return applyRisk(rule, ctx, RateLimitDecision.challenge(), incidentCount);
@@ -217,15 +240,27 @@ public class RateLimitService {
                     ? recordIncidentsLocal(ruleKey, keyParts, riskWindowSeconds, now)
                     : 0;
             if (action == RateLimitProperties.OnLimitAction.BLOCK || action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT) {
-                for (String keyPart : keyParts) {
-                    localBlocks.put(blockKey(ruleKey, keyPart), new Counter(1, now + (blockSeconds * 1000L)));
-                }
+                boolean alert = action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
+                        && shouldAlertOnNewBlockLocal(rule, ruleKey, keyParts, now, blockSeconds);
                 RateLimitDecision decision = RateLimitDecision.block(blockSeconds);
-                if (action == RateLimitProperties.OnLimitAction.BLOCK_AND_ALERT
-                        && shouldAlertOnNewBlockLocal(rule, ruleKey, keyParts, now, blockSeconds)) {
+                if (alert) {
                     decision = decision.withAlert(true);
                 }
-                return applyRisk(rule, ctx, decision, incidentCount);
+                RiskLevel riskLevel = evaluateRiskLevel(rule, ctx, decision, incidentCount);
+                int adjustedBlockSeconds = applyRiskBlockMultiplier(blockSeconds, riskLevel, rule);
+                if (adjustedBlockSeconds != blockSeconds) {
+                    decision = RateLimitDecision.block(adjustedBlockSeconds);
+                    if (alert) {
+                        decision = decision.withAlert(true);
+                    }
+                }
+                for (String keyPart : keyParts) {
+                    localBlocks.put(
+                            blockKey(ruleKey, keyPart),
+                            new Counter(1, now + (adjustedBlockSeconds * 1000L))
+                    );
+                }
+                return decision.withRisk(riskLevel);
             }
             if (action == RateLimitProperties.OnLimitAction.CHALLENGE) {
                 return applyRisk(rule, ctx, RateLimitDecision.challenge(), incidentCount);
@@ -259,6 +294,14 @@ public class RateLimitService {
         }
         long scaled = (long) safeMax * safeMultiplier;
         return (int) Math.min(Integer.MAX_VALUE, scaled);
+    }
+
+    private static boolean requiresVerified(RateLimitProperties.Rule rule) {
+        return rule.getKeyTypes() != null && rule.getKeyTypes().contains(RateLimitProperties.KeyType.VERIFIED_USER);
+    }
+
+    private static boolean requiresMobileAttestation(RateLimitProperties.Rule rule) {
+        return rule.getKeyTypes() != null && rule.getKeyTypes().contains(RateLimitProperties.KeyType.MOBILE_ATTESTED);
     }
 
     private static String countKey(String ruleKey, String keyPart) {
@@ -583,11 +626,41 @@ public class RateLimitService {
             RateLimitDecision decision,
             long incidentCount
     ) {
-        if (riskEvaluator == null || decision == null) {
-            return decision;
+        if (decision == null) {
+            return null;
         }
-        RiskLevel level = riskEvaluator.evaluate(rule, ctx, decision, incidentCount);
+        RiskLevel level = evaluateRiskLevel(rule, ctx, decision, incidentCount);
         return decision.withRisk(level);
+    }
+
+    private RiskLevel evaluateRiskLevel(
+            RateLimitProperties.Rule rule,
+            RateLimitContext ctx,
+            RateLimitDecision decision,
+            long incidentCount
+    ) {
+        if (riskEvaluator == null || decision == null) {
+            return decision == null ? RiskLevel.LOW : decision.risk();
+        }
+        return riskEvaluator.evaluate(rule, ctx, decision, incidentCount);
+    }
+
+    private static int applyRiskBlockMultiplier(
+            int blockSeconds,
+            RiskLevel riskLevel,
+            RateLimitProperties.Rule rule
+    ) {
+        if (riskLevel == null || rule == null) {
+            return Math.max(1, blockSeconds);
+        }
+        int multiplier = switch (riskLevel) {
+            case HIGH -> rule.getRiskBlockMultiplierHigh();
+            case MEDIUM -> rule.getRiskBlockMultiplierMedium();
+            default -> 1;
+        };
+        int safeMultiplier = Math.max(1, multiplier);
+        long scaled = (long) Math.max(1, blockSeconds) * safeMultiplier;
+        return (int) Math.min(Integer.MAX_VALUE, scaled);
     }
 
     private long recordIncidentsRedis(

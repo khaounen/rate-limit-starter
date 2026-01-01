@@ -46,10 +46,21 @@ public class RateLimitAutoConfiguration {
             RateLimitProperties properties,
             RateLimitService service,
             org.springframework.beans.factory.ObjectProvider<ObjectMapper> objectMapperProvider,
-            RateLimitChallengeHandler challengeHandler
+            RateLimitChallengeHandler challengeHandler,
+            ObjectProvider<UserVerificationResolver> userVerificationResolverProvider,
+            ObjectProvider<DeviceAttestationResolver> deviceAttestationResolverProvider
     ) {
         ObjectMapper objectMapper = objectMapperProvider.getIfAvailable(ObjectMapper::new);
-        return new RateLimitFilter(properties, service, objectMapper, challengeHandler);
+        UserVerificationResolver userVerificationResolver = userVerificationResolverProvider.getIfAvailable();
+        DeviceAttestationResolver deviceAttestationResolver = deviceAttestationResolverProvider.getIfAvailable();
+        return new RateLimitFilter(
+                properties,
+                service,
+                objectMapper,
+                challengeHandler,
+                userVerificationResolver,
+                deviceAttestationResolver
+        );
     }
 
     @Bean

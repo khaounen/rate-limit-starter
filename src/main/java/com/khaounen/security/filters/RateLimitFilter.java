@@ -6,6 +6,8 @@ import com.khaounen.security.ratelimit.RateLimitContext;
 import com.khaounen.security.ratelimit.RateLimitDecision;
 import com.khaounen.security.ratelimit.RateLimitProperties;
 import com.khaounen.security.ratelimit.RateLimitService;
+import com.khaounen.security.ratelimit.DeviceAttestationResolver;
+import com.khaounen.security.ratelimit.UserVerificationResolver;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -39,17 +41,23 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final RateLimitService service;
     private final ObjectMapper objectMapper;
     private final RateLimitChallengeHandler challengeHandler;
+    private final UserVerificationResolver userVerificationResolver;
+    private final DeviceAttestationResolver deviceAttestationResolver;
 
     public RateLimitFilter(
             RateLimitProperties properties,
             RateLimitService service,
             ObjectMapper objectMapper,
-            RateLimitChallengeHandler challengeHandler
+            RateLimitChallengeHandler challengeHandler,
+            UserVerificationResolver userVerificationResolver,
+            DeviceAttestationResolver deviceAttestationResolver
     ) {
         this.properties = properties;
         this.service = service;
         this.objectMapper = objectMapper;
         this.challengeHandler = challengeHandler;
+        this.userVerificationResolver = userVerificationResolver;
+        this.deviceAttestationResolver = deviceAttestationResolver;
     }
 
     @Override
@@ -73,6 +81,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         boolean authenticated = isAuthenticated(auth);
+        boolean verified = isVerified(auth, request);
+        boolean mobileAttested = isMobileAttested(request);
         RateLimitProperties.Rule rule = ruleOpt.get();
         HttpServletRequest effectiveRequest = request;
         List<String> identifiers = List.of();
@@ -85,6 +95,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
         RateLimitContext ctx = new RateLimitContext(
                 authenticated,
+                verified,
+                mobileAttested,
                 resolveFingerprint(auth, authenticated),
                 RequestContext.getIp(),
                 RequestContext.getUserAgent(),
@@ -113,6 +125,20 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(effectiveRequest, response);
+    }
+
+    private boolean isVerified(Authentication auth, HttpServletRequest request) {
+        if (userVerificationResolver == null) {
+            return false;
+        }
+        return userVerificationResolver.isVerified(auth, request);
+    }
+
+    private boolean isMobileAttested(HttpServletRequest request) {
+        if (deviceAttestationResolver == null) {
+            return false;
+        }
+        return deviceAttestationResolver.isAttested(request);
     }
 
     private boolean isAuthenticated(Authentication auth) {

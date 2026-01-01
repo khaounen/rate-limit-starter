@@ -55,7 +55,20 @@ class DefaultRiskEvaluatorTest {
         assertEquals(RiskLevel.MEDIUM, medium);
     }
 
+    @Test
+    void blockAndAlertDoesNotAddAlertRiskByDefault() {
+        DefaultRiskEvaluator evaluator = new DefaultRiskEvaluator();
+        RateLimitProperties.Rule rule = new RateLimitProperties.Rule();
+        rule.setRiskScore(0);
+        rule.setRiskMediumThreshold(50);
+        rule.setRiskHighThreshold(80);
+
+        RateLimitDecision decision = RateLimitDecision.block(1).withAlert(true);
+        RiskLevel level = evaluator.evaluate(rule, ctx(), decision, 0);
+        assertEquals(RiskLevel.LOW, level);
+    }
+
     private static RateLimitContext ctx() {
-        return new RateLimitContext(false, "fp", "ip", "ua", List.of("id"));
+        return new RateLimitContext(false, false, false, "fp", "ip", "ua", List.of("id"));
     }
 }
